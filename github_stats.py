@@ -36,8 +36,8 @@ class SimpleCache:
     
     def _get_cache_path(self, key: str) -> str:
         """Get the file path for a cache key"""
-        # Use hash to create a safe filename
-        key_hash = hashlib.md5(key.encode()).hexdigest()
+        # Use SHA-256 hash to create a safe filename
+        key_hash = hashlib.sha256(key.encode()).hexdigest()
         return os.path.join(self.cache_dir, f"{key_hash}.json")
     
     def get(self, key: str) -> Optional[Any]:
@@ -573,7 +573,11 @@ Languages:
         repos = await self.repos
         
         async def fetch_repo_stats(repo: str) -> Tuple[int, int]:
-            """Fetch contributor stats for a single repo"""
+            """
+            Fetch contributor stats for a single repo.
+            :param repo: Repository name in format 'owner/name'
+            :return: Tuple of (additions, deletions) for the user
+            """
             additions = 0
             deletions = 0
             r = await self.queries.query_rest(f"/repos/{repo}/stats/contributors")
@@ -638,7 +642,11 @@ Languages:
         repos = await self.repos
         
         async def fetch_repo_views(repo: str) -> int:
-            """Fetch traffic views for a single repo"""
+            """
+            Fetch traffic views for a single repo.
+            :param repo: Repository name in format 'owner/name'
+            :return: Total view count for the last 14 days
+            """
             count = 0
             r = await self.queries.query_rest(f"/repos/{repo}/traffic/views")
             for view in r.get("views", []):
