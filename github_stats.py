@@ -289,6 +289,49 @@ class Queries(object):
 """
 
     @staticmethod
+    def org_repos(org_login: str, cursor: Optional[str] = None) -> str:
+        """
+        :param org_login: login of the organization
+        :param cursor: pagination cursor from the previous page of repositories
+        :return: GraphQL query with overview of an organization's repositories
+        """
+        return f"""{{
+  organization(login: "{org_login}") {{
+    repositories(
+        first: 100,
+        orderBy: {{
+            field: UPDATED_AT,
+            direction: DESC
+        }},
+        isFork: false,
+        after: {"null" if cursor is None else '"'+ cursor +'"'}
+    ) {{
+      pageInfo {{
+        hasNextPage
+        endCursor
+      }}
+      nodes {{
+        nameWithOwner
+        stargazers {{
+          totalCount
+        }}
+        forkCount
+        languages(first: 10, orderBy: {{field: SIZE, direction: DESC}}) {{
+          edges {{
+            size
+            node {{
+              name
+              color
+            }}
+          }}
+        }}
+      }}
+    }}
+  }}
+}}
+"""
+
+    @staticmethod
     def contrib_years() -> str:
         """
         :return: GraphQL query to get all years the user has been a contributor
@@ -353,8 +396,10 @@ class Stats(object):
         cache_ttl: int = 3600,
         include_views: bool = True,
         include_lines_changed: bool = True,
+        orgs: Optional[List[str]] = None,
     ):
         self.username = username
+        self.orgs = orgs if orgs is not None else []
         self._ignore_forked_repos = ignore_forked_repos
         self._exclude_repos = set() if exclude_repos is None else exclude_repos
         self._exclude_langs = set() if exclude_langs is None else exclude_langs
@@ -436,29 +481,7 @@ Languages:
                 repos += contrib_repos.get("nodes", [])
 
             for repo in repos:
-                if repo is None:
-                    continue
-                name = repo.get("nameWithOwner")
-                if name in self._repos or name in self._exclude_repos:
-                    continue
-                self._repos.add(name)
-                self._stargazers += repo.get("stargazers").get("totalCount", 0)
-                self._forks += repo.get("forkCount", 0)
-
-                for lang in repo.get("languages", {}).get("edges", []):
-                    name = lang.get("node", {}).get("name", "Other")
-                    languages = await self.languages
-                    if name.lower() in exclude_langs_lower:
-                        continue
-                    if name in languages:
-                        languages[name]["size"] += lang.get("size", 0)
-                        languages[name]["occurrences"] += 1
-                    else:
-                        languages[name] = {
-                            "size": lang.get("size", 0),
-                            "occurrences": 1,
-                            "color": lang.get("node", {}).get("color"),
-                        }
+                await self.add_repo(repo, exclude_langs_lower)
 
             if owned_repos.get("pageInfo", {}).get(
                 "hasNextPage", False
@@ -472,11 +495,56 @@ Languages:
             else:
                 break
 
+        for org in self.orgs:
+            next_org = None
+            while True:
+                raw_results = await self.queries.query(Queries.org_repos(org, next_org))
+                org_data = raw_results.get("data", {}).get("organization", {})
+                if not org_data:
+                    print(f"Organization '{org}' not found; skipping its repositories")
+                    break
+
+                page = org_data.get("repositories", {})
+                for repo in page.get("nodes", []):
+                    await self.add_repo(repo, exclude_langs_lower)
+
+                if page.get("pageInfo", {}).get("hasNextPage", False):
+                    next_org = page.get("pageInfo", {}).get("endCursor")
+                else:
+                    break
+
         # TODO: Improve languages to scale by number of contributions to
         #       specific filetypes
         langs_total = sum([v.get("size", 0) for v in self._languages.values()])
         for k, v in self._languages.items():
             v["prop"] = 100 * (v.get("size", 0) / langs_total)
+
+    async def add_repo(self, repo: Dict, exclude_langs_lower: Set) -> None:
+        if repo is None:
+            return
+
+        name = repo.get("nameWithOwner")
+        if name in self._repos or name in self._exclude_repos:
+            return
+
+        self._repos.add(name)
+        self._stargazers += repo.get("stargazers").get("totalCount", 0)
+        self._forks += repo.get("forkCount", 0)
+
+        for lang in repo.get("languages", {}).get("edges", []):
+            name = lang.get("node", {}).get("name", "Other")
+            languages = await self.languages
+            if name.lower() in exclude_langs_lower:
+                continue
+            if name in languages:
+                languages[name]["size"] += lang.get("size", 0)
+                languages[name]["occurrences"] += 1
+            else:
+                languages[name] = {
+                    "size": lang.get("size", 0),
+                    "occurrences": 1,
+                    "color": lang.get("node", {}).get("color"),
+                }
 
     @property
     async def name(self) -> str:
